@@ -1,0 +1,8 @@
+{
+  "transport_reduction": 20.0,
+  "renewable_increase": 3.09,
+  "industry_efficiency": 7.46,
+  "baseline_emission": 2.1179,
+  "optimized_emission": 1.9509,
+  "reduction_pct": 7.89
+}

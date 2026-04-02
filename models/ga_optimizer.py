@@ -104,6 +104,7 @@ stats.register("min",  np.min)
 stats.register("mean", np.mean)
 
 hof = tools.HallOfFame(1)   # keep best individual ever seen
+convergence_history = []    # best RF-predicted emission (Mt) after each generation
 
 for gen in range(1, GENERATIONS + 1):
     # Evaluate fitness
@@ -112,6 +113,7 @@ for gen in range(1, GENERATIONS + 1):
         ind.fitness.values = fit
 
     hof.update(population)
+    convergence_history.append(float(hof[0].fitness.values[0]))
 
     # Selection
     offspring = toolbox.select(population, len(population))
@@ -171,6 +173,9 @@ result = {
     "baseline_emission":   round(BASELINE_EMISSION, 4),
     "optimized_emission":  round(optimized_emission, 4),
     "reduction_pct":       round(reduction_pct, 2),
+    "population_size":    POP_SIZE,
+    "generations":         GENERATIONS,
+    "fitness_evaluations": POP_SIZE * GENERATIONS,
 }
 
 import json, os
@@ -178,4 +183,13 @@ os.makedirs("models", exist_ok=True)
 with open("models/ga_result.json", "w") as f:
     json.dump(result, f, indent=2)
 
+conv_payload = {
+    "generation": list(range(1, len(convergence_history) + 1)),
+    "best_emission_mt": [round(x, 6) for x in convergence_history],
+    "note": "Best RF-predicted emission (Mt) in hall of fame after each generation.",
+}
+with open("models/ga_convergence.json", "w") as f:
+    json.dump(conv_payload, f, indent=2)
+
 print("\nBest strategy saved to models/ga_result.json")
+print(f"Convergence trace saved to models/ga_convergence.json ({len(convergence_history)} points)")

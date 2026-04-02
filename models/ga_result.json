@@ -4,5 +4,8 @@
   "industry_efficiency": 7.46,
   "baseline_emission": 2.1179,
   "optimized_emission": 1.9509,
-  "reduction_pct": 7.89
+  "reduction_pct": 7.89,
+  "population_size": 100,
+  "generations": 80,
+  "fitness_evaluations": 8000
 }

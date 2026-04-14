@@ -7,8 +7,12 @@ from sklearn.preprocessing import StandardScaler
 import joblib
 import os
 
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_PATH = os.path.join(ROOT, "data", "carbon_emission_data.csv")
+MODELS_DIR = os.path.join(ROOT, "models")
+
 # ── Load data ──────────────────────────────────────────────────────────────────
-df = pd.read_csv("data/carbon_emission_data.csv")
+df = pd.read_csv(DATA_PATH)
 
 FEATURES = [
     "month_index",
@@ -62,8 +66,8 @@ for feat, imp in sorted(zip(FEATURES, rf.feature_importances_), key=lambda x: -x
     print(f"  {feat:<25} {imp:.3f}  {bar}")
 
 # ── Save model and scaler ──────────────────────────────────────────────────────
-os.makedirs("models", exist_ok=True)
-joblib.dump(rf,     "models/rf_model.pkl")
-joblib.dump(scaler, "models/rf_scaler.pkl")
-print("\nModel saved to models/rf_model.pkl")
-print("Scaler saved to models/rf_scaler.pkl")
+os.makedirs(MODELS_DIR, exist_ok=True)
+joblib.dump(rf,     os.path.join(MODELS_DIR, "rf_model.pkl"))
+joblib.dump(scaler, os.path.join(MODELS_DIR, "rf_scaler.pkl"))
+print(f"\nModel saved to {os.path.join(MODELS_DIR, 'rf_model.pkl')}")
+print(f"Scaler saved to {os.path.join(MODELS_DIR, 'rf_scaler.pkl')}")

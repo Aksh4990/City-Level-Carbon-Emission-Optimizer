@@ -2,6 +2,10 @@ import numpy as np
 import pandas as pd
 import os
 
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(ROOT, "data")
+DATA_PATH = os.path.join(DATA_DIR, "carbon_emission_data.csv")
+
 np.random.seed(42)
 months = 60  # 5 years of monthly data (Jan 2020 – Dec 2024)
 
@@ -53,10 +57,10 @@ df = pd.DataFrame({
     "total_emission":      emission.round(4),
 })
 
-os.makedirs("data", exist_ok=True)
-df.to_csv("data/carbon_emission_data.csv", index=False)
+os.makedirs(DATA_DIR, exist_ok=True)
+df.to_csv(DATA_PATH, index=False)
 
-print("Dataset saved to data/carbon_emission_data.csv")
+print(f"Dataset saved to {DATA_PATH}")
 print(f"Shape: {df.shape}")
 print(f"Emission range: {emission.min():.3f} – {emission.max():.3f} million tons")
 print(f"Renewable share: {renewable_share.min():.1f}% – {renewable_share.max():.1f}%")

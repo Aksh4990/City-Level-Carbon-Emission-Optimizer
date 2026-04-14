@@ -10,6 +10,8 @@ import sys
 import os
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_DIR = os.path.join(ROOT, "data")
+MODELS_DIR = os.path.join(ROOT, "models")
 sys.path.append(ROOT)
 
 st.set_page_config(
@@ -225,6 +227,84 @@ def whatif_example_nudges(rf, rf_sc, latest, feature_order):
     return p0, rows
 
 
+def solve_policy_for_target(rf, rf_sc, latest, feature_order, target_mt, temp_adj, mode):
+    """
+    Search the displayed What-If slider space and return the lowest-friction
+    policy mix that reaches the requested emission target.
+    """
+    candidates = []
+    rows = []
+    rows_without_renew = []
+
+    for transport_red in range(0, 31):
+        for renewable_inc in range(0, 31):
+            for industry_eff in range(0, 16):
+                transport_activity = latest["transport_activity"] * (1 - transport_red / 100)
+                industry_activity = latest["industry_activity"] * (1 - industry_eff / 100)
+                renewable_share = latest["renewable_share_pct"] + renewable_inc
+                row = [
+                    latest["month_index"],
+                    latest["temperature_c"] + temp_adj,
+                    latest["gdp_index"],
+                    transport_activity,
+                    industry_activity,
+                    renewable_share,
+                ]
+                row_without_renew = row.copy()
+                row_without_renew[5] = latest["renewable_share_pct"]
+                difficulty = (
+                    (transport_red / 30) * 40
+                    + (renewable_inc / 30) * 25
+                    + (industry_eff / 15) * 25
+                    + (abs(temp_adj) / 5) * 10
+                )
+                candidates.append({
+                    "transport": transport_red,
+                    "renewable": renewable_inc,
+                    "industry": industry_eff,
+                    "difficulty": float(difficulty),
+                })
+                rows.append(row)
+                rows_without_renew.append(row_without_renew)
+
+    pred = rf.predict(rf_sc.transform(np.array(rows, dtype=float)))
+    pred_without_renew = rf.predict(rf_sc.transform(np.array(rows_without_renew, dtype=float)))
+
+    for candidate, emission, emission_without_renew in zip(candidates, pred, pred_without_renew):
+        if (
+            candidate["renewable"] > 0
+            and abs(float(emission) - float(emission_without_renew)) < RF_RENEW_DEAD_THRESHOLD
+        ):
+            emission = float(emission) + RENEWABLE_PHYSICS_MT_PER_PCT * candidate["renewable"]
+        candidate["emission"] = float(emission)
+
+        lever_levels = [
+            candidate["transport"] / 30,
+            candidate["renewable"] / 30,
+            candidate["industry"] / 15,
+        ]
+        active_levers = sum(level > 0 for level in lever_levels)
+        concentration_penalty = max(lever_levels) * 20 - active_levers * 4
+        if mode == "Balanced mix":
+            candidate["solver_score"] = candidate["difficulty"] + concentration_penalty
+        elif mode == "Transport-first":
+            candidate["solver_score"] = candidate["difficulty"] - candidate["transport"] * 0.6
+        elif mode == "Industry-light":
+            candidate["solver_score"] = candidate["difficulty"] + candidate["industry"] * 1.2
+        else:
+            candidate["solver_score"] = candidate["difficulty"]
+
+    best_overall = min(candidates, key=lambda c: c["emission"])
+    meeting = [c for c in candidates if c["emission"] <= target_mt]
+    best_meeting = min(
+        meeting,
+        key=lambda c: (c["solver_score"], c["emission"], c["transport"] + c["renewable"] + c["industry"]),
+        default=None,
+    )
+
+    return best_meeting, best_overall
+
+
 def compute_lstm_forecast(df, lstm_model, lstm_sc, lstm_feat, n_steps=6, seq_len=12):
     data = df[lstm_feat].values
     data_sc = lstm_sc.transform(data)
@@ -261,7 +341,7 @@ def compute_rf_horizon_forecast(rf, rf_sc, latest, n_steps=6):
 
 
 def load_ga_convergence():
-    path = os.path.join(ROOT, "models", "ga_convergence.json")
+    path = os.path.join(MODELS_DIR, "ga_convergence.json")
     if not os.path.isfile(path):
         return None
     with open(path, encoding="utf-8") as f:
@@ -356,23 +436,23 @@ USE_CASE_SCENARIOS = [
 
 @st.cache_resource
 def load_models():
-    rf = joblib.load("models/rf_model.pkl")
-    rf_sc = joblib.load("models/rf_scaler.pkl")
-    lstm_sc = joblib.load("models/lstm_scaler.pkl")
-    lstm_feat = joblib.load("models/lstm_features.pkl")
+    rf = joblib.load(os.path.join(MODELS_DIR, "rf_model.pkl"))
+    rf_sc = joblib.load(os.path.join(MODELS_DIR, "rf_scaler.pkl"))
+    lstm_sc = joblib.load(os.path.join(MODELS_DIR, "lstm_scaler.pkl"))
+    lstm_feat = joblib.load(os.path.join(MODELS_DIR, "lstm_features.pkl"))
     lstm = EmissionLSTM(input_size=7, hidden_size=64,
                         num_layers=2, dropout=0.2)
     lstm.load_state_dict(torch.load(
-        "models/lstm_model.pth", map_location="cpu"))
+        os.path.join(MODELS_DIR, "lstm_model.pth"), map_location="cpu"))
     lstm.eval()
-    with open("models/ga_result.json") as f:
+    with open(os.path.join(MODELS_DIR, "ga_result.json"), encoding="utf-8") as f:
         ga = json.load(f)
     return rf, rf_sc, lstm, lstm_sc, lstm_feat, ga
 
 
 @st.cache_data
 def load_data():
-    return pd.read_csv("data/carbon_emission_data.csv", parse_dates=["date"])
+    return pd.read_csv(os.path.join(DATA_DIR, "carbon_emission_data.csv"), parse_dates=["date"])
 
 
 rf, rf_sc, lstm_model, lstm_sc, lstm_feat, ga_result = load_models()
@@ -401,6 +481,11 @@ for _wk, _wv in [
         st.session_state[_wk] = _wv
 
 baseline_mt = float(latest["total_emission"])
+if "whatif_target" not in st.session_state:
+    st.session_state.whatif_target = round(baseline_mt * 0.94, 3)
+if "whatif_solver_mode" not in st.session_state:
+    st.session_state.whatif_solver_mode = "Balanced mix"
+
 lstm_jun = float(fc_lstm[-1])
 lstm_delta_jun_pct = (lstm_jun - baseline_mt) / baseline_mt * 100
 if len(df) >= 12:
@@ -930,6 +1015,52 @@ with tab5:
     with col_sliders:
         st.markdown('<div style="font-family:DM Mono,monospace;font-size:10px;color:#3A6A8A;letter-spacing:0.15em;margin-bottom:16px;">── POLICY LEVERS</div>', unsafe_allow_html=True)
 
+        c_target, c_solve = st.columns([0.62, 0.38])
+        with c_target:
+            target_mt = st.number_input(
+                "Target emission (Mt)",
+                min_value=0.5,
+                max_value=3.0,
+                step=0.01,
+                format="%.3f",
+                help="Demo goal for the current what-if scenario. The app will score whether the slider mix reaches it.",
+                key="whatif_target",
+            )
+        with c_solve:
+            st.markdown("<div style='height:28px;'></div>", unsafe_allow_html=True)
+            if st.button("Find target plan", help="Search slider combinations for a plan that reaches the target."):
+                found, best = solve_policy_for_target(
+                    rf, rf_sc, latest, RF_FEATURES, target_mt, st.session_state.whatif_temp,
+                    st.session_state.whatif_solver_mode)
+                solver_pick = found or best
+                st.session_state.whatif_transport = solver_pick["transport"]
+                st.session_state.whatif_renewable = solver_pick["renewable"]
+                st.session_state.whatif_industry = solver_pick["industry"]
+                if found:
+                    st.session_state.whatif_solver_note = (
+                        f"{st.session_state.whatif_solver_mode} solver found a target plan: {found['emission']:.3f} Mt "
+                        f"at difficulty {found['difficulty']:.0f}/100."
+                    )
+                else:
+                    st.session_state.whatif_solver_note = (
+                        f"Target is outside the current slider bounds. Best found: "
+                        f"{best['emission']:.3f} Mt at difficulty {best['difficulty']:.0f}/100."
+                    )
+
+        st.selectbox(
+            "Solver style",
+            ["Balanced mix", "Lowest-friction", "Transport-first", "Industry-light"],
+            help=(
+                "Balanced mix spreads action across levers. Lowest-friction may lean heavily on renewables "
+                "because this demo dataset gives that lever strong impact. Transport-first and Industry-light "
+                "bias the search for presentation scenarios."
+            ),
+            key="whatif_solver_mode",
+        )
+
+        if st.session_state.get("whatif_solver_note"):
+            st.info(st.session_state.whatif_solver_note)
+
         transport_red = st.slider(
             "🚗  Transport Activity Reduction (%)",
             min_value=0, max_value=30, step=1,
@@ -997,6 +1128,32 @@ with tab5:
         is_reduction = delta < 0
         result_color = SUCCESS if is_reduction else DANGER
         arrow = "↓" if is_reduction else "↑"
+        target_gap = sim_emission - target_mt
+        target_met = target_gap <= 0
+
+        impact_score = float(np.clip((-delta_pct / 10) * 100, 0, 100))
+        difficulty_score = (
+            (transport_red / 30) * 40
+            + (renewable_inc / 30) * 25
+            + (industry_eff / 15) * 25
+            + (abs(temp_adj) / 5) * 10
+        )
+        target_score = 100 if target_met else float(np.clip(100 - (target_gap / baseline) * 500, 0, 100))
+        overall_score = 0.55 * impact_score + 0.30 * target_score + 0.15 * (100 - difficulty_score)
+        if overall_score >= 85:
+            scenario_grade = "A"
+            grade_color = SUCCESS
+        elif overall_score >= 70:
+            scenario_grade = "B"
+            grade_color = ACCENT
+        elif overall_score >= 55:
+            scenario_grade = "C"
+            grade_color = WARNING
+        else:
+            scenario_grade = "D"
+            grade_color = DANGER
+
+        feasibility = "LOW FRICTION" if difficulty_score < 35 else "MODERATE" if difficulty_score < 65 else "HIGH INTENSITY"
 
         st.markdown(f"""
         <div style='padding:28px;background:#0D1117;border:1px solid #1C2A3A;
@@ -1013,6 +1170,27 @@ with tab5:
             </div>
             <div style='font-family:DM Mono,monospace;font-size:11px;color:#3A6A8A;margin-top:6px;'>
                 vs baseline of {baseline:.3f} Mt
+            </div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        target_status = "TARGET MET" if target_met else "TARGET GAP"
+        target_text = (
+            f"{abs(target_gap):.3f} Mt below target"
+            if target_met else f"{target_gap:.3f} Mt above target"
+        )
+        target_color = SUCCESS if target_met else WARNING
+        st.markdown(f"""
+        <div style='display:flex;gap:12px;margin-bottom:16px;'>
+            <div style='flex:1;padding:16px;background:#0D1117;border:1px solid {target_color}60;border-radius:8px;'>
+                <div style='font-family:DM Mono,monospace;font-size:10px;color:#5A7A9A;letter-spacing:0.12em;'>{target_status}</div>
+                <div style='font-family:Syne,sans-serif;font-size:20px;font-weight:800;color:{target_color};margin-top:6px;'>{target_text}</div>
+                <div style='font-family:DM Mono,monospace;font-size:11px;color:#3A6A8A;margin-top:6px;'>Goal: {target_mt:.3f} Mt</div>
+            </div>
+            <div style='width:120px;padding:16px;background:#0D1117;border:1px solid {grade_color}60;border-radius:8px;text-align:center;'>
+                <div style='font-family:DM Mono,monospace;font-size:10px;color:#5A7A9A;letter-spacing:0.12em;'>PLAN GRADE</div>
+                <div style='font-family:Syne,sans-serif;font-size:34px;font-weight:800;color:{grade_color};line-height:1;margin-top:6px;'>{scenario_grade}</div>
+                <div style='font-family:DM Mono,monospace;font-size:10px;color:#3A6A8A;margin-top:6px;'>{overall_score:.0f}/100</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
@@ -1096,3 +1274,163 @@ with tab5:
                         border-radius:8px;font-family:DM Mono,monospace;font-size:11px;color:#3A5A7A;'>
                 Move the sliders to see per-lever contribution
             </div>""", unsafe_allow_html=True)
+
+        if contributions:
+            best_idx = int(np.argmax([abs(v) for v in contributions]))
+            best_lever = labels_c[best_idx]
+            best_value = contributions[best_idx]
+            if best_value > 0:
+                lever_note = f"{best_lever} is doing the most useful work in this scenario ({best_value:.4f} Mt saved on its own)."
+            else:
+                lever_note = f"{best_lever} has the largest modeled movement, but it is not improving this scenario by itself."
+        else:
+            lever_note = "No policy lever is active yet, so this is effectively the current-city baseline."
+
+        if not target_met:
+            recommendation = (
+                f"Target is still {target_gap:.3f} Mt away. Increase the strongest clean lever first, then tune the others: {lever_note}"
+            )
+            rec_color = WARNING
+        elif difficulty_score >= 65:
+            recommendation = (
+                f"The target is met, but the package is high intensity. Try easing one lever at a time while keeping emissions under {target_mt:.3f} Mt. {lever_note}"
+            )
+            rec_color = ACCENT
+        elif is_reduction:
+            recommendation = (
+                f"This is a strong demo plan: target met, emissions are down {abs(delta_pct):.1f}%, and policy intensity is {feasibility.lower()}. {lever_note}"
+            )
+            rec_color = SUCCESS
+        else:
+            recommendation = (
+                f"The target is met only because the goal is above the current prediction; this is not a reduction scenario yet. {lever_note}"
+            )
+            rec_color = WARNING
+
+        st.markdown(f"""
+        <div style='margin-top:16px;padding:16px 18px;background:#0D1117;
+                    border:1px solid {rec_color}60;border-left:3px solid {rec_color};
+                    border-radius:8px;font-family:DM Mono,monospace;font-size:12px;
+                    color:#C8D8E8;line-height:1.7;'>
+            <div style='font-size:10px;color:#5A7A9A;letter-spacing:0.14em;margin-bottom:6px;'>RECOMMENDATION</div>
+            {recommendation}<br>
+            <span style='color:#5A7A9A;'>Impact score: {impact_score:.0f}/100 · Feasibility: {feasibility} · Difficulty: {difficulty_score:.0f}/100</span>
+        </div>
+        """, unsafe_allow_html=True)
+
+        top_lever = best_lever if contributions else "None"
+        top_lever_impact = best_value if contributions else 0.0
+        current_plan = {
+            "Target (Mt)": round(float(target_mt), 3),
+            "Predicted Emission (Mt)": round(float(sim_emission), 4),
+            "Target Gap (Mt)": round(float(target_gap), 4),
+            "Target Met": "Yes" if target_met else "No",
+            "Grade": scenario_grade,
+            "Score": round(float(overall_score), 1),
+            "Difficulty": round(float(difficulty_score), 1),
+            "Feasibility": feasibility,
+            "Transport Reduction (%)": int(transport_red),
+            "Renewable Increase (%)": int(renewable_inc),
+            "Industry Efficiency (%)": int(industry_eff),
+            "Temperature Adjustment (C)": int(temp_adj),
+            "Top Lever": top_lever,
+            "Top Lever Impact (Mt)": round(float(top_lever_impact), 4),
+            "Recommendation": recommendation,
+        }
+
+        st.markdown('<div style="font-family:DM Mono,monospace;font-size:10px;color:#3A6A8A;letter-spacing:0.15em;margin:20px 0 10px 0;">── DECISION TOOLS</div>', unsafe_allow_html=True)
+        c_plan_a, c_plan_b, c_report = st.columns([0.28, 0.28, 0.44])
+        with c_plan_a:
+            if st.button("Save as Plan A", key="save_plan_a"):
+                st.session_state.whatif_plan_a = dict(current_plan)
+                st.success("Plan A saved.")
+        with c_plan_b:
+            if st.button("Save as Plan B", key="save_plan_b"):
+                st.session_state.whatif_plan_b = dict(current_plan)
+                st.success("Plan B saved.")
+
+        contribution_lines = (
+            "\n".join(f"- {label}: {value:+.4f} Mt saved" for label, value in zip(labels_c, contributions))
+            if contributions else "- No active levers."
+        )
+        report_text = f"""# CarbonAI What-If Decision Report
+
+Baseline emission: {baseline:.4f} Mt
+Target emission: {target_mt:.4f} Mt
+Predicted scenario emission: {sim_emission:.4f} Mt
+Target status: {'Met' if target_met else 'Missed'} ({target_gap:+.4f} Mt)
+Plan grade: {scenario_grade} ({overall_score:.1f}/100)
+Feasibility: {feasibility}
+Difficulty: {difficulty_score:.1f}/100
+
+## Policy Levers
+
+- Transport reduction: {transport_red}%
+- Renewable increase: {renewable_inc}%
+- Industry efficiency: {industry_eff}%
+- Temperature adjustment: {temp_adj:+d} C
+
+## Per-Lever Contribution
+
+{contribution_lines}
+
+## Recommendation
+
+{recommendation}
+"""
+        with c_report:
+            st.download_button(
+                "Download current report",
+                data=report_text.encode("utf-8"),
+                file_name="carbonai_whatif_report.md",
+                mime="text/markdown",
+                key="download_whatif_report",
+            )
+
+        saved_plans = []
+        for label, key in [("Plan A", "whatif_plan_a"), ("Plan B", "whatif_plan_b")]:
+            plan = st.session_state.get(key)
+            if plan:
+                saved_plans.append({"Plan": label, **plan})
+
+        if saved_plans:
+            compare_df = pd.DataFrame(saved_plans)[[
+                "Plan",
+                "Predicted Emission (Mt)",
+                "Target Gap (Mt)",
+                "Target Met",
+                "Grade",
+                "Score",
+                "Difficulty",
+                "Feasibility",
+                "Transport Reduction (%)",
+                "Renewable Increase (%)",
+                "Industry Efficiency (%)",
+                "Temperature Adjustment (C)",
+                "Top Lever",
+            ]]
+            st.dataframe(compare_df, width="stretch", hide_index=True)
+
+            fig_plan_cmp = go.Figure(go.Bar(
+                x=compare_df["Plan"],
+                y=compare_df["Predicted Emission (Mt)"],
+                marker=dict(color=[ACCENT, SUCCESS][:len(compare_df)], line=dict(width=0)),
+                text=[f"{v:.3f} Mt" for v in compare_df["Predicted Emission (Mt)"]],
+                textposition="outside",
+                textfont=dict(family="DM Mono", size=11, color="#C8D8E8"),
+            ))
+            fig_plan_cmp.add_hline(
+                y=target_mt,
+                line_dash="dot",
+                line_color=WARNING,
+                annotation_text=f"Target {target_mt:.3f} Mt",
+                annotation_font=dict(family="DM Mono", size=10, color=WARNING),
+            )
+            fig_plan_cmp.update_layout(
+                **PLOT_THEME,
+                height=220,
+                yaxis=dict(title="Predicted emission (Mt)", **AXIS_STYLE),
+                xaxis=dict(**AXIS_STYLE),
+                showlegend=False,
+            )
+            st.plotly_chart(fig_plan_cmp, width="stretch")

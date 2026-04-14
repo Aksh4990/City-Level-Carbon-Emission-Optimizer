@@ -7,8 +7,12 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import joblib
 import os
 
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_PATH = os.path.join(ROOT, "data", "carbon_emission_data.csv")
+MODELS_DIR = os.path.join(ROOT, "models")
+
 # ── Load data ──────────────────────────────────────────────────────────────────
-df = pd.read_csv("data/carbon_emission_data.csv")
+df = pd.read_csv(DATA_PATH)
 
 FEATURES = [
     "month_index",
@@ -147,9 +151,9 @@ for month, val in zip(future_months, future_real):
     print(f"{month:<12}  {val:>18.4f} M tons")
 
 # ── Save model and scaler ──────────────────────────────────────────────────────
-os.makedirs("models", exist_ok=True)
-torch.save(model.state_dict(), "models/lstm_model.pth")
-joblib.dump(scaler,            "models/lstm_scaler.pkl")
-joblib.dump(FEATURES,          "models/lstm_features.pkl")
-print("\nModel saved to models/lstm_model.pth")
-print("Scaler saved to models/lstm_scaler.pkl")
+os.makedirs(MODELS_DIR, exist_ok=True)
+torch.save(model.state_dict(), os.path.join(MODELS_DIR, "lstm_model.pth"))
+joblib.dump(scaler,            os.path.join(MODELS_DIR, "lstm_scaler.pkl"))
+joblib.dump(FEATURES,          os.path.join(MODELS_DIR, "lstm_features.pkl"))
+print(f"\nModel saved to {os.path.join(MODELS_DIR, 'lstm_model.pth')}")
+print(f"Scaler saved to {os.path.join(MODELS_DIR, 'lstm_scaler.pkl')}")

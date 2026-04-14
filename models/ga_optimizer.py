@@ -2,14 +2,20 @@ import numpy as np
 import pandas as pd
 import joblib
 import random
+import json
+import os
 from deap import base, creator, tools, algorithms
 
+ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+DATA_PATH = os.path.join(ROOT, "data", "carbon_emission_data.csv")
+MODELS_DIR = os.path.join(ROOT, "models")
+
 # ── Load RF model and scaler ───────────────────────────────────────────────────
-rf     = joblib.load("models/rf_model.pkl")
-scaler = joblib.load("models/rf_scaler.pkl")
+rf     = joblib.load(os.path.join(MODELS_DIR, "rf_model.pkl"))
+scaler = joblib.load(os.path.join(MODELS_DIR, "rf_scaler.pkl"))
 
 # ── Latest known city state (Dec 2024 — last row of dataset) ──────────────────
-df = pd.read_csv("data/carbon_emission_data.csv")
+df = pd.read_csv(DATA_PATH)
 latest = df.iloc[-1]
 
 BASE_STATE = {
@@ -178,9 +184,8 @@ result = {
     "fitness_evaluations": POP_SIZE * GENERATIONS,
 }
 
-import json, os
-os.makedirs("models", exist_ok=True)
-with open("models/ga_result.json", "w") as f:
+os.makedirs(MODELS_DIR, exist_ok=True)
+with open(os.path.join(MODELS_DIR, "ga_result.json"), "w", encoding="utf-8") as f:
     json.dump(result, f, indent=2)
 
 conv_payload = {
@@ -188,7 +193,7 @@ conv_payload = {
     "best_emission_mt": [round(x, 6) for x in convergence_history],
     "note": "Best RF-predicted emission (Mt) in hall of fame after each generation.",
 }
-with open("models/ga_convergence.json", "w") as f:
+with open(os.path.join(MODELS_DIR, "ga_convergence.json"), "w", encoding="utf-8") as f:
     json.dump(conv_payload, f, indent=2)
 
 print("\nBest strategy saved to models/ga_result.json")
